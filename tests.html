@@ -1,0 +1,276 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Library System - Automated Tests</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f6fb;
+      padding: 25px;
+      color: #1d2433;
+    }
+    .container {
+      max-width: 800px;
+      margin: auto;
+      background: white;
+      padding: 25px;
+      border-radius: 12px;
+    }
+    .result {
+      padding: 12px;
+      margin: 8px 0;
+      border-radius: 6px;
+      background: #eee;
+    }
+    .pass { background: #d3f9d8; color: #176b2c; }
+    .fail { background: #ffe3e3; color: #b00020; }
+    button {
+      padding: 12px 20px;
+      background: #3b5bdb;
+      color: white;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    iframe { display: none; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>Library Management System</h1>
+  <h2>Automated Testing Dashboard</h2>
+  <p>Testing registration, login, borrowing, returning,
+     searching and admin approval.</p>
+
+  <button onclick="runTests()">Run All Tests</button>
+
+  <h3 id="summary">Tests not started</h3>
+  <div id="results"></div>
+
+  <iframe id="appFrame"></iframe>
+</div>
+
+<script>
+const frame = document.getElementById("appFrame");
+const results = document.getElementById("results");
+const summary = document.getElementById("summary");
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function createForm(w, values) {
+  const form = w.document.createElement("form");
+
+  Object.entries(values).forEach(([name, value]) => {
+    const input = w.document.createElement("input");
+    input.name = name;
+    input.value = value;
+    form.appendChild(input);
+  });
+
+  w.document.body.appendChild(form);
+  return form;
+}
+
+function report(name, passed, message = "") {
+  const div = document.createElement("div");
+  div.className = "result " + (passed ? "pass" : "fail");
+  div.textContent =
+    (passed ? "PASS ✓ " : "FAIL ✗ ") +
+    name + (message ? " — " + message : "");
+
+  results.appendChild(div);
+  return passed;
+}
+
+async function runTests() {
+  results.innerHTML = "";
+  summary.textContent = "Running tests...";
+
+  // Use a clean demo database.
+  localStorage.removeItem("college_lib_db_v1");
+  localStorage.removeItem("college_lib_session_v1");
+
+  frame.src = "code.html?testing=" + Date.now();
+
+  await new Promise(resolve => {
+    frame.onload = resolve;
+  });
+
+  await wait(300);
+
+  const w = frame.contentWindow;
+  let passed = 0;
+  let failed = 0;
+
+  async function test(name, callback) {
+    try {
+      const result = await callback();
+      if (result === true) {
+        report(name, true);
+        passed++;
+      } else {
+        report(name, false, "Unexpected result");
+        failed++;
+      }
+    } catch (error) {
+      report(name, false, error.message);
+      failed++;
+    }
+  }
+
+  // 1. Registration
+  await test("Student registration", () => {
+    const before = w.eval("db.users.length");
+
+    const form = createForm(w, {
+      name: "Test Student",
+      roll: "TEST001",
+      email: "test@example.com",
+      pass: "test123"
+    });
+
+    w.doRegister({
+      preventDefault() {},
+      target: form
+    });
+
+    return w.eval("db.users.length") === before + 1;
+  });
+
+  // 2. Duplicate email
+  await test("Duplicate email validation", () => {
+    const before = w.eval("db.users.length");
+
+    const form = createForm(w, {
+      name: "Duplicate Student",
+      roll: "TEST002",
+      email: "test@example.com",
+      pass: "test123"
+    });
+
+    w.doRegister({
+      preventDefault() {},
+      target: form
+    });
+
+    return w.eval("db.users.length") === before;
+  });
+
+  // 3. Wrong password
+  await test("Invalid login rejection", () => {
+    w.eval("session = null");
+
+    const form = createForm(w, {
+      email: "student@college.edu",
+      pass: "wrongpassword"
+    });
+
+    w.doLogin({
+      preventDefault() {},
+      target: form
+    });
+
+    return w.eval("session === null");
+  });
+
+  // 4. Successful login
+  await test("Valid student login", () => {
+    const form = createForm(w, {
+      email: "student@college.edu",
+      pass: "student123"
+    });
+
+    w.doLogin({
+      preventDefault() {},
+      target: form
+    });
+
+    return w.eval("session === 'u_demo'");
+  });
+
+  // 5. Borrow available book
+  await test("Borrow available book", () => {
+    const id = w.eval(
+      "db.books.find(b => b.type === 'physical' && available(b) > 0).id"
+    );
+
+    const before = w.eval("db.loans.length");
+    w.borrow(id);
+
+    return w.eval("db.loans.length") === before + 1;
+  });
+
+  // 6. Return borrowed book
+  await test("Return borrowed book", () => {
+    const loanId = w.eval(
+      "db.loans.find(l => l.userId === 'u_demo' && !l.returned).id"
+    );
+
+    if (!loanId) return false;
+
+    w.returnBook(loanId);
+
+    return w.eval(
+      "db.loans.find(l => l.id === '" +
+      loanId + "').returned !== null"
+    );
+  });
+
+  // 7. Search books
+  await test("Book search functionality", () => {
+    w.eval("state.page = 'catalog'; state.q = 'Python'; render()");
+
+    const text = w.document.getElementById("list").textContent;
+
+    return text.toLowerCase().includes("python");
+  });
+
+  // 8. Admin approval
+  await test("Admin book approval", () => {
+    w.eval("session = 'u_admin'");
+
+    const id = "test_pending_book";
+
+    w.eval(`
+      db.books.push({
+        id: "${id}",
+        title: "Testing Book",
+        author: "Test Author",
+        category: "Computer",
+        type: "ebook",
+        copies: 999,
+        price: 0,
+        status: "pending",
+        submittedBy: "u_demo",
+        text: "Testing content"
+      });
+    `);
+
+    w.setStatus(id, "approved");
+
+    return w.eval(
+      "db.books.find(b => b.id === '" +
+      id + "').status === 'approved'"
+    );
+  });
+
+  summary.textContent =
+    "Results: " + passed + " Passed | " +
+    failed + " Failed | " +
+    (passed + failed) + " Total";
+
+  const heading = document.createElement("p");
+  heading.textContent = failed === 0
+    ? "All automated tests passed."
+    : "Some tests failed. Check the results above.";
+
+  results.appendChild(heading);
+}
+</script>
+</body>
+</html>
